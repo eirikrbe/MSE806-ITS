@@ -93,8 +93,16 @@ data/        what was collected
 ### The dashboard
 
 `dashboard/dublin_bus_replay.html` is a single self-contained file — download it and open it in a
-browser, no server needed. It replays a weekday across the network, with each bus coloured by its
-observed lateness on 22 September 2026, and a second mode showing scheduled speed by route.
+browser, no server needed. It replays the network across a weekday, each bus placed on its timetable
+and shifted by its latest reported delay, with a second mode showing scheduled speed by route.
+
+**Both collected service days are in the file.** A switch in the header moves between Tuesday 22 and
+Wednesday 23 September. Each day keeps its own 24-hour timeline rather than scrolling across two
+midnights, so the same clock time can be compared directly; the side panel recomputes as you switch.
+
+That comparison makes the outage described above visible without reading a chart. At 10:30 on
+Tuesday the replay shows **264** scheduled trips with no vehicle reporting; at the same minute on
+Wednesday it shows **103**. The difference is the degraded hour, not a change in the service.
 
 ---
 
@@ -161,10 +169,10 @@ python scripts/collect_gtfsr.py --hours 48    # appends to data/
 The feed's fair-use limit is one call per minute; the collector polls every 62 seconds and backs off
 on errors.
 
-**4. Rebuilding the dashboard.**
+**4. Rebuilding the dashboard.** Pass one service date, or several to get the day switch:
 
 ```bash
-python scripts/build_dashboard.py --observed-date 20260922
+python scripts/build_dashboard.py --observed-date 20260922 20260923
 ```
 
 ---

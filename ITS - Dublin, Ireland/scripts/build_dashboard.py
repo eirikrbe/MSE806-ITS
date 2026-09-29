@@ -6,7 +6,7 @@ Inputs
   GTFS_Dublin_Bus/                       static timetable (Mon-Thu service 190 is replayed)
   Research/dashboard/*_osm_raw.json      coastline, Liffey, M50, Phoenix Park (OpenStreetMap, ODbL)
   Research/dashboard/template.html       the page; __DATA__ and __LEAFLET_CSS__ are filled in here
-  data/stu_*.csv.gz                      optional: observed delays for --observed-date (Dublin service date)
+  ~/nta_gtfsr_data/stu_*.csv.gz          optional: observed delays for --observed-date (Dublin service date)
 """
 import argparse, json, subprocess
 from collections import defaultdict
@@ -192,38 +192,60 @@ def network_and_trips():
 
 
 # ---------------------------------------------------------------- observed delays (optional)
-def observed(date, trip_ids, seq_pos):
+def observed(dates, trip_ids, seq_pos):
+    """Observed delays for one or more Dublin service days, keyed by date.
+
+    Each day is independent: `t` is seconds since that day's local midnight, so the
+    replay keeps a 24-hour timeline and the viewer switches days rather than
+    scrubbing across two midnights.
+    """
     files = sorted(DATA_DIR.glob("stu_*.csv.gz"))
     if not files:
         return None
-    stu = pd.concat((pd.read_csv(f, dtype={"trip_id": str, "start_date": str, "vehicle_id": str}) for f in files))
-    stu = stu[(stu["start_date"] == date) & stu["vehicle_id"].notna()]
-    stu["delay"] = stu["dep_delay"].fillna(stu["arr_delay"])
-    stu = stu.dropna(subset=["delay", "stop_sequence"])
-    midnight = pd.Timestamp(date, tz="Europe/Dublin").timestamp()
-    stu["t"] = (stu["poll_ts"] - midnight).astype(int)
-    tix = {t: i for i, t in enumerate(trip_ids)}
-    out = {}
-    for tid, grp in stu.sort_values("poll_ts").groupby("trip_id"):
-        if tid not in tix:
-            continue
-        pos = seq_pos[tid]
-        out[tix[tid]] = [[int(t), pos.get(int(s), -1), int(d)] for t, s, d in
-                         zip(grp["t"], grp["stop_sequence"], grp["delay"]) if abs(d) < 3 * 3600]
+    stu_all = pd.concat((pd.read_csv(f, dtype={"trip_id": str, "start_date": str, "vehicle_id": str})
+                         for f in files))
     trips_files = sorted(DATA_DIR.glob("trips_*.csv.gz"))
-    cancelled = []
-    if trips_files:
-        tr = pd.concat((pd.read_csv(f, dtype={"trip_id": str, "start_date": str}) for f in trips_files))
-        c = tr[(tr["start_date"] == date) & tr["trip_rel"].astype(str).str.upper().str.contains("CANCEL")]
-        cancelled = sorted({tix[t] for t in c["trip_id"] if t in tix})
-    last_poll = int(stu["poll_ts"].max() - midnight) if len(stu) else None
-    return {"date": date, "trips": out, "cancelled": cancelled, "last_poll_s": last_poll}
+    tr_all = pd.concat((pd.read_csv(f, dtype={"trip_id": str, "start_date": str}) for f in trips_files)) \
+        if trips_files else None
+    tix = {t: i for i, t in enumerate(trip_ids)}
+
+    days = {}
+    for date in dates:
+        stu = stu_all[(stu_all["start_date"] == date) & stu_all["vehicle_id"].notna()].copy()
+        if stu.empty:
+            print(f"  ! no observed rows for {date}, skipped")
+            continue
+        stu["delay"] = stu["dep_delay"].fillna(stu["arr_delay"])
+        stu = stu.dropna(subset=["delay", "stop_sequence"])
+        midnight = pd.Timestamp(date, tz="Europe/Dublin").timestamp()
+        stu["t"] = (stu["poll_ts"] - midnight).astype(int)
+        out = {}
+        for tid, grp in stu.sort_values("poll_ts").groupby("trip_id"):
+            if tid not in tix:
+                continue
+            pos = seq_pos[tid]
+            out[tix[tid]] = [[int(t), pos.get(int(s), -1), int(d)] for t, s, d in
+                             zip(grp["t"], grp["stop_sequence"], grp["delay"]) if abs(d) < 3 * 3600]
+        cancelled = []
+        if tr_all is not None:
+            c = tr_all[(tr_all["start_date"] == date)
+                       & tr_all["trip_rel"].astype(str).str.upper().str.contains("CANCEL")]
+            cancelled = sorted({tix[t] for t in c["trip_id"] if t in tix})
+        days[date] = {"trips": out, "cancelled": cancelled,
+                      "last_poll_s": int(stu["poll_ts"].max() - midnight) if len(stu) else None}
+        print(f"  {date}: {len(out)} tracked trips, {len(cancelled)} cancelled, "
+              f"last poll {days[date]['last_poll_s']}s after midnight")
+    if not days:
+        return None
+    return {"dates": sorted(days), "days": days}
 
 
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--observed-date", help="Dublin service date YYYYMMDD to colour buses by real lateness")
+    ap.add_argument("--observed-date", nargs="+", metavar="YYYYMMDD",
+                    help="one or more Dublin service dates to colour buses by real lateness; "
+                         "with several, the page gets a day switch")
     args = ap.parse_args()
     routes, stop_xy, patterns, heads, trip_rows, trip_ids, seq_pos, running, busiest = network_and_trips()
     summary = json.loads((ROOT / "figures" / "gtfs_summary.json").read_text())
@@ -242,8 +264,9 @@ def main():
     out = DASH / "dublin_bus_replay.html"
     out.write_text(html)
     obs = data["observed"]
+    obs_desc = ", ".join(f"{d} ({len(obs['days'][d]['trips'])} trips)" for d in obs["dates"]) if obs else "none"
     print(f"wrote {out} ({out.stat().st_size / 1e6:.2f} MB): {len(routes)} routes, {len(trip_rows)} trips, "
-          f"{len(patterns)} stop patterns, observed trips: {len(obs['trips']) if obs else 0}")
+          f"{len(patterns)} stop patterns\nobserved days: {obs_desc}")
 
 
 if __name__ == "__main__":

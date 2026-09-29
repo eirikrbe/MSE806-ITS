@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>Dublin Bus Weekday Replay</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -47,6 +48,7 @@ h1, h2 { font-family: var(--display); line-height: 1.1; font-weight: 600; letter
 .eyebrow { font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; font-weight: 700; color: var(--pounamu); }
 h1 { font-size: clamp(24px, 3.2vw, 32px); font-weight: 700; margin-top: 2px; text-wrap: balance; }
 .sub { margin: 4px 0 0; color: var(--ink-soft); font-size: 14.5px; max-width: 72ch; }
+.switches { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .segmented { display: flex; background: var(--paper-2); border-radius: 999px; padding: 4px; width: fit-content; }
 .segmented button { background: none; border: none; border-radius: 999px; padding: 8px 18px; font: 600 14px var(--sans);
   color: var(--ink-soft); cursor: pointer; transition: .14s; }
@@ -159,9 +161,12 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: none;
         <p class="sub" id="subtitle"></p>
       </div>
     </div>
-    <div class="segmented" role="group" aria-label="Map mode">
-      <button id="mode-replay" type="button" aria-pressed="true">Replay</button>
-      <button id="mode-speed" type="button" aria-pressed="false">Timetable speeds</button>
+    <div class="switches">
+      <div class="segmented" id="dayswitch" role="group" aria-label="Service day" hidden></div>
+      <div class="segmented" role="group" aria-label="Map mode">
+        <button id="mode-replay" type="button" aria-pressed="true">Replay</button>
+        <button id="mode-speed" type="button" aria-pressed="false">Timetable speeds</button>
+      </div>
     </div>
   </header>
   <div class="niho" aria-hidden="true"></div>
@@ -243,16 +248,24 @@ window.DATA = __DATA__;
     return { route: r[0], head: r[1], pat: r[2], start: r[3], off, end: r[3] + off[n - 1] };
   });
   const OBS = D.observed;
-  const obsTrips = OBS ? OBS.trips : null;
-  const cancelled = new Set(OBS ? OBS.cancelled : []);
-  const lastPoll = OBS && OBS.last_poll_s != null ? OBS.last_poll_s : Infinity;
+  let obsDay = OBS ? OBS.dates[0] : null;
+  let obsTrips = OBS ? OBS.days[obsDay].trips : null;
+  let cancelled = new Set(OBS ? OBS.days[obsDay].cancelled : []);
+  let lastPoll = OBS && OBS.days[obsDay].last_poll_s != null ? OBS.days[obsDay].last_poll_s : Infinity;
   const fmtClock = (sec) => { const m = Math.floor(sec / 60); return String(Math.floor(m / 60) % 24).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0"); };
   const dayName = (d) => new Date(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6)).toLocaleDateString("en-IE", { weekday: "long", day: "numeric", month: "short", year: "numeric" });
   const nf = (v) => v.toLocaleString("en-IE");
 
-  $("subtitle").textContent = OBS
-    ? `Real delays from the NTA live feed for ${dayName(OBS.date)}. Each bus is placed on its timetable, shifted by its latest reported delay.`
-    : "Buses move to the Monday–Thursday timetable. Real delays for Tuesday 22 Sep are added once Dublin's day has been collected.";
+  const shortDay = (d) => new Date(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6))
+    .toLocaleDateString("en-IE", { weekday: "short", day: "numeric", month: "short" });
+  function subtitleText() {
+    if (!OBS) return "Buses move to the Monday–Thursday timetable. Real delays are added once Dublin's day has been collected.";
+    const span = OBS.dates.length > 1
+      ? ` Two service days were collected, ${shortDay(OBS.dates[0])} and ${shortDay(OBS.dates[OBS.dates.length - 1])}; showing ${dayName(obsDay)}.`
+      : "";
+    return `Real delays from the NTA live feed.${span || ` ${dayName(obsDay)}.`} Each bus is placed on its timetable, shifted by its latest reported delay.`;
+  }
+  $("subtitle").textContent = subtitleText();
 
   // ---------- map
   const map = L.map("map", { zoomSnap: 0.25, zoomAnimation: false, fadeAnimation: false, attributionControl: false,
@@ -366,9 +379,12 @@ window.DATA = __DATA__;
     $("k3").textContent = routes.length;
     $("k4").textContent = nf(D.meta.peak_pm.buses);
   }
-  $("replay-note").textContent = OBS
-    ? `Positions are approximate: timetable plus each bus's latest reported delay.${isFinite(lastPoll) ? ` Live data for this day ends at ${fmtClock(lastPoll)}.` : ""}`
-    : "Positions follow the timetable, so every bus is on time here. On Wednesday this switches to Dublin's real Tuesday, with each bus coloured by its lateness.";
+  const noteText = () => OBS
+    ? `Positions are approximate: timetable plus each bus's latest reported delay.${isFinite(lastPoll)
+        ? ` Live data for ${shortDay(obsDay)} ends at ${fmtClock(lastPoll)}${lastPoll >= 86400 ? " the next morning, on the overnight trips" : ""}.`
+        : ""}`
+    : "Positions follow the timetable, so every bus is on time here.";
+  $("replay-note").textContent = noteText();
 
   function updatePanel(buses) {
     const n = {}; LEG.forEach(([k]) => { n[k] = 0; });
@@ -414,9 +430,12 @@ window.DATA = __DATA__;
     hit.addEventListener("mouseleave", () => place(el._cursor ?? cursorX));
     el._place = place; el._cursor = cursorX; place(cursorX);
   }
-  const runX = [], runY = [];
-  for (let m = 270; m <= 1560; m += 5) { runX.push(m); runY.push(OBS ? busesAt(m * 60).length : D.meta.running_5min[Math.round(m / 5)] || 0); }
-  lineChart($("chart-running"), runX, runY, { yMax: 1000, yFmt: (v) => nf(Math.round(v)), xFmt: (m) => fmtClock(m * 60), cursorX: T / 60 });
+  function buildRunChart() {
+    const runX = [], runY = [];
+    for (let m = 270; m <= 1560; m += 5) { runX.push(m); runY.push(OBS ? busesAt(m * 60).length : D.meta.running_5min[Math.round(m / 5)] || 0); }
+    lineChart($("chart-running"), runX, runY, { yMax: 1000, yFmt: (v) => nf(Math.round(v)), xFmt: (m) => fmtClock(m * 60), cursorX: T / 60 });
+  }
+  buildRunChart();
   const sh = Object.entries(D.meta.speed_by_hour).map(([k, v]) => { let h = +k.slice(0, 2); if (h < 5) h += 24; return [h * 60, v]; }).sort((a, b) => a[0] - b[0]);
   lineChart($("chart-speed"), sh.map((p) => p[0]), sh.map((p) => p[1]), { yMax: 30, yFmt: (v) => Math.round(v) + (v === 30 ? " km/h" : ""), xFmt: (m) => fmtClock(m * 60), cursorX: 8 * 60 });
 
@@ -467,6 +486,28 @@ window.DATA = __DATA__;
     setTimeout(() => map.invalidateSize(), 0);
     render();
   }
+  // ---------- service-day switch (only when more than one day was collected)
+  function setDay(d) {
+    if (!OBS || d === obsDay || !OBS.days[d]) return;
+    obsDay = d;
+    obsTrips = OBS.days[d].trips;
+    cancelled = new Set(OBS.days[d].cancelled);
+    lastPoll = OBS.days[d].last_poll_s != null ? OBS.days[d].last_poll_s : Infinity;
+    $("subtitle").textContent = subtitleText();
+    $("replay-note").textContent = noteText();
+    $("dayswitch").querySelectorAll("button").forEach((b) =>
+      b.setAttribute("aria-pressed", b.dataset.day === d));
+    buildRunChart();
+    render();
+  }
+  if (OBS && OBS.dates.length > 1) {
+    const ds = $("dayswitch");
+    ds.hidden = false;
+    ds.innerHTML = OBS.dates.map((d) =>
+      `<button type="button" data-day="${d}" aria-pressed="${d === obsDay}">${shortDay(d)}</button>`).join("");
+    ds.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => setDay(b.dataset.day)));
+  }
+
   $("mode-replay").addEventListener("click", () => setMode("replay"));
   $("mode-speed").addEventListener("click", () => setMode("speed"));
 
