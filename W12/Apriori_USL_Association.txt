@@ -12,18 +12,24 @@ df.columns = [
 df['active_event'] = df['active_event'].fillna('None')
 
 # Discretize Features into True/False Conditions
+# (the minimum packet_delivery_ratio is 0.731, so a fixed 0.73 cut-off never fires;
+#  use the lowest quartile instead)
+signal_threshold = df['packet_delivery_ratio'].quantile(0.25)
+
 df_assoc = pd.DataFrame()
 df_assoc['High_Traffic_Density'] = df['rho_current'] > 170
-df_assoc['Signal_Degraded'] = df['packet_delivery_ratio'] < 0.73
+df_assoc['Signal_Degraded'] = df['packet_delivery_ratio'] < signal_threshold
 df_assoc['Accident_Present'] = df['active_event'] == 'Accident'
+df_assoc['Construction_Present'] = df['active_event'] == 'Construction'
 
 # Apply Apriori Algorithm
-frequent_itemsets = apriori(df_assoc, min_support=0.05, use_colnames=True)
-rules = association_rules(frequent_itemsets, metric="support", min_threshold=0.05)
+frequent_itemsets = apriori(df_assoc, min_support=0.03, use_colnames=True)
+rules = association_rules(frequent_itemsets, metric="lift", min_threshold=1.0)
 
 # Print Discovered Rules
 print("=== DISCOVERED TRAFFIC ASSOCIATION RULES ===")
 for idx, row in rules.iterrows():
-    antecedent = list(row['antecedents'])[0]
-    consequent = list(row['consequents'])[0]
-    print(f"Rule {idx+1}: IF [{antecedent}] ==> THEN [{consequent}]")
+    antecedent = ' AND '.join(sorted(row['antecedents']))
+    consequent = ' AND '.join(sorted(row['consequents']))
+    print(f"Rule {idx+1}: IF [{antecedent}] ==> THEN [{consequent}] "
+          f"(support={row['support']:.2f}, confidence={row['confidence']:.2f}, lift={row['lift']:.2f})")
