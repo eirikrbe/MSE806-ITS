@@ -1,0 +1,5 @@
+# Collected data and local environment
+data/
+.venv/
+__pycache__/
+.env
